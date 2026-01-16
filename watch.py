@@ -1,22 +1,6 @@
-import pandas as pd
-from datetime import datetime, timedelta
-from kiteconnect import KiteConnect
-from rich.console import Console
-from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
-
-# ================= CONFIG =================
-API_KEY = "ikfiyrgi5w2dttxb"
-ACCESS_TOKEN = "1eksEcZi4gtSkgk4CWXHFDvYc7hq9Iwg"
-
-LOOKBACK_DAYS = 20
-BUFFER_DAYS = 60   # enough to skip weekends + holidays
-TOP_N = 10
-
-
-
-# ================= CONSOLE =================
-console = Console()
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 # ================= SECTORS =================
 SECTOR_DEFINITIONS = {
@@ -71,7 +55,7 @@ SECTOR_DEFINITIONS = {
         "ANGELONE", "RECLTD", "BAJFINANCE", "BSE", "MAXHEALTH",
         "ICICIGI", "HUDCO", "CHOLAFIN", "PFC", "HDFCAMC", "MUTHOOTFIN",
         "PAYTM", "JIOFIN", "SHRIRAMFIN", "SBICARD", "POLICYBZR",
-        "SBILIFE", "LICHSGFIN", "LICI", "MANAPPURAM", 'IRFC', "IIFL", "CDSL"
+        "SBILIFE", "LICHSGFIN", "LICI", "MANAPPURAM", "IRFC", "IIFL", "CDSL"
     ],
     "BANK": [
         "IDFCFIRSTB", "FEDERALBNK", "INDUSINDBK",
@@ -98,108 +82,412 @@ SECTOR_DEFINITIONS = {
         "ASHOKLEY", "PERSISTENT", "UPL", "GODREJPROP",
         "AUROPHARMA", "AUBANK", "ASTRAL", "HDFCAMC",
         "JUBLFOOD", "PIIND"
+    ],
+    "INDICES": [
+        "CNXENERGY","CNXCONSUMPTION","CNXREALTY","NIFTY_OIL_AND_GAS",
+        "CNXPHARMA","CNXIT","NIFTY_HEALTHCARE","CNXFMCG",
+        "CNXFINANCE","NIFTY_CONSR_DURBL","CNXAUTO","CNXMETAL"
     ]
 }
-SYMBOLS = sorted(set(sum(SECTOR_DEFINITIONS.values(), [])))
 
-# ================= KITE INIT =================
-console.print("\n[bold cyan]🔌 Connecting to Kite...[/bold cyan]")
-kite = KiteConnect(api_key=API_KEY)
-kite.set_access_token(ACCESS_TOKEN)
+# ================= FASTAPI =================
+app = FastAPI(title="TradingView Watchlist")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# ================= LOAD INSTRUMENTS =================
-inst = pd.DataFrame(kite.instruments("NSE"))
-inst = inst[inst.tradingsymbol.isin(SYMBOLS)]
-symbol_token = dict(zip(inst.tradingsymbol, inst.instrument_token))
+@app.get("/", response_class=HTMLResponse)
+def index():
+    sidebar = ""
+    for sector, stocks in SECTOR_DEFINITIONS.items():
+        sidebar += f"""
+        <div class="sector collapsed" onclick="toggleSector(this)">{sector}</div>
+        <div class="sector-group">
+        """
+        for s in stocks:
+            sidebar += f"""
+            <div class="stock" data-symbol="{s}">
+              <div class="stock-left">
+                <span class="stock-name" onclick="selectStock(this.closest('.stock'))">{s}</span>
+                <span class="open-new" onclick="openStockNewTab(event,'{s}')">↗</span>
+              </div>
+              <span class="star" onclick="toggleFav(event,'{s}')">☆</span>
+            </div>
+            """
+        sidebar += "</div>"
 
-console.print(f"[green]✔ Loaded {len(symbol_token)} symbols[/green]")
+    return f"""
+<!DOCTYPE html>
+<html>
+<head>
+<title>Watchlist</title>
+<script src="https://s3.tradingview.com/tv.js"></script>
 
-# ================= DATE RANGE =================
-today = datetime.now().date()
-from_date = today - timedelta(days=BUFFER_DAYS)
+<style>
+/* ===== GLOBAL ===== */
+body {{
+  margin:0;
+  height:100vh;
+  display:flex;
+  background:radial-gradient(1200px 600px at 10% 10%, #0f172a, #020617);
+  font-family:Inter,system-ui,-apple-system;
+  color:#e5e7eb;
+}}
 
-results = []
+#chart {{ flex:1; position:relative; }}
+#tv {{ height:100%; }}
 
-# ================= DATA FETCH WITH PROGRESS =================
-console.print("\n[bold yellow]📊 Fetching volume data (today vs 20D avg)...[/bold yellow]\n")
+/* ===== OPEN TV BUTTON ===== */
+#open-tv {{
+  position:absolute;
+  top:14px;
+  right:18px;
+  z-index:10;
+  background:linear-gradient(135deg,#111827,#020617);
+  color:#e5e7eb;
+  border:1px solid rgba(37,99,235,.6);
+  padding:7px 12px;
+  font-size:12px;
+  font-weight:700;
+  border-radius:8px;
+  cursor:pointer;
+  box-shadow:0 6px 20px rgba(0,0,0,.4);
+}}
+#open-tv:hover {{
+  background:#2563eb;
+}}
 
-with Progress(
-    SpinnerColumn(),
-    TextColumn("[progress.description]{task.description}"),
-    BarColumn(),
-    TextColumn("{task.completed}/{task.total}"),
-    TimeElapsedColumn(),
-    console=console,
-) as progress:
+/* ===== SIDEBAR ===== */
+#sidebar {{
+  width:340px;
+  background:linear-gradient(180deg,#020617,#020617 60%,#01040a);
+  overflow-y:auto;
+  border-left:1px solid rgba(148,163,184,.15);
+}}
 
-    task = progress.add_task("Processing stocks", total=len(symbol_token))
+#resizer {{
+  width:6px;
+  cursor:col-resize;
+  background:linear-gradient(180deg,#020617,#020617);
+}}
 
-    for sym, token in symbol_token.items():
-        try:
-            df = pd.DataFrame(
-                kite.historical_data(token, from_date, today, "day")
-            )
+/* ===== HEADER ===== */
+.header {{
+  padding:18px 16px;
+  font-size:22px;
+  backdrop-filter: blur(8px);
+  font-weight:900;
+  letter-spacing:1px;
+  text-transform:uppercase;
 
-            if len(df) < LOOKBACK_DAYS + 1:
-                progress.advance(task)
-                continue
+  color:#f8fafc;
 
-            today_vol = df.iloc[-1]["volume"]
-            avg_20d = df.iloc[-LOOKBACK_DAYS-1:-1]["volume"].mean()
-            ratio = today_vol / avg_20d if avg_20d else 0
+  background:
+    linear-gradient(
+      135deg,
+      #1e40af,
+      #2563eb 40%,
+      #22d3ee
+    );
 
-            results.append({
-                "symbol": sym,
-                "today_volume": int(today_vol),
-                "avg_20d_volume": int(avg_20d),
-                "volume_ratio": round(ratio, 2)
-            })
+  border-bottom:1px solid rgba(255,255,255,0.15);
 
-        except Exception as e:
-            console.print(f"[red]❌ {sym} failed[/red]")
+  position:sticky;
+  top:0;
+  z-index:20;
 
-        progress.advance(task)
+  box-shadow:
+    0 10px 30px rgba(0,0,0,0.45),
+    inset 0 -1px 0 rgba(255,255,255,0.2);
+}}
 
-# ================= RESULT DF =================
-df = pd.DataFrame(results)
+.header::after {{
+  content:"";
+  position:absolute;
+  left:16px;
+  bottom:6px;
+  width:48px;
+  height:3px;
+  border-radius:999px;
+  background:linear-gradient(90deg,#fde68a,#facc15);
+}}
 
-if df.empty:
-    console.print("[bold red]⚠️ No data fetched. Exiting.[/bold red]")
-    exit()
+.header:hover {{
+  box-shadow:
+    0 12px 40px rgba(37,99,235,0.45),
+    inset 0 -1px 0 rgba(255,255,255,0.25);
+}}
 
-# ================= TOP VOLUME TABLE =================
-top_table = Table(title="🔝 Top Volume Expansion Stocks (Today vs 20D Avg)", header_style="bold green")
-top_table.add_column("Symbol", style="cyan")
-top_table.add_column("Today Vol", justify="right")
-top_table.add_column("20D Avg Vol", justify="right")
-top_table.add_column("Vol Ratio", justify="right", style="bold green")
 
-for _, r in df.sort_values("volume_ratio", ascending=False).head(TOP_N).iterrows():
-    top_table.add_row(
-        r["symbol"],
-        f"{r['today_volume']:,}",
-        f"{r['avg_20d_volume']:,}",
-        f"{r['volume_ratio']}"
-    )
+/* ===== FAVORITES ===== */
+.fav-header {{
+  margin:12px 12px 6px;
+  padding:10px 14px;
+  font-size:12px;
+  font-weight:900;
+  letter-spacing:1.2px;
+  text-transform:uppercase;
+  color:#fde68a;
+  background:linear-gradient(90deg,rgba(250,204,21,.25),rgba(251,191,36,.15));
+  border:1px solid rgba(250,204,21,.4);
+  border-radius:10px;
+  cursor:pointer;
+  position:relative;
+}}
 
-# ================= LOW VOLUME TABLE =================
-low_table = Table(title="🔻 Lowest Volume Stocks (Drying Participation)", header_style="bold red")
-low_table.add_column("Symbol", style="cyan")
-low_table.add_column("Today Vol", justify="right")
-low_table.add_column("20D Avg Vol", justify="right")
-low_table.add_column("Vol Ratio", justify="right", style="bold red")
+.fav-header::after {{
+  content:"▾";
+  position:absolute;
+  right:14px;
+  top:50%;
+  transform:translateY(-50%);
+  transition:transform .25s ease;
+}}
 
-for _, r in df.sort_values("volume_ratio", ascending=True).head(TOP_N).iterrows():
-    low_table.add_row(
-        r["symbol"],
-        f"{r['today_volume']:,}",
-        f"{r['avg_20d_volume']:,}",
-        f"{r['volume_ratio']}"
-    )
+.fav-header.collapsed::after {{
+  transform:translateY(-50%) rotate(-90deg);
+}}
 
-# ================= DISPLAY =================
-console.print()
-console.print(top_table)
-console.print()
-console.print(low_table)
-console.print("\n[bold green]✅ Scan Complete[/bold green]\n")
+#fav-list {{
+  margin:0 12px 10px;
+  overflow:hidden;
+  max-height:800px;
+  opacity:1;
+  transition:max-height .35s cubic-bezier(.4,0,.2,1),opacity .25s ease;
+}}
+
+.fav-header.collapsed + #fav-list {{
+  max-height:0;
+  opacity:0;
+  pointer-events:none;
+}}
+
+.fav-stock {{
+  padding:8px 12px;
+  font-size:13px;
+  font-weight:600;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  border-radius:8px;
+  color:#f8fafc;
+  transition:all .15s ease;
+}}
+
+.fav-stock:hover {{
+  background:rgba(250,204,21,.12);
+}}
+
+.fav-remove {{
+  color:#f87171;
+  font-weight:900;
+  cursor:pointer;
+}}
+.fav-remove:hover {{
+  color:#ef4444;
+  transform:scale(1.15);
+}}
+
+/* ===== SECTORS ===== */
+.sector {{
+  padding:10px 14px;
+  margin:8px 12px 6px;
+  font-size:12px;
+  font-weight:900;
+  letter-spacing:1.2px;
+  text-transform:uppercase;
+  color:#e0f2fe;
+  background:linear-gradient(90deg,rgba(37,99,235,.25),rgba(34,211,238,.15));
+  border:1px solid rgba(56,189,248,.45);
+  border-radius:999px;
+  cursor:pointer;
+  position:relative;
+}}
+
+.sector::after {{
+  content:"▾";
+  position:absolute;
+  right:14px;
+  top:50%;
+  transform:translateY(-50%);
+  transition:transform .25s ease;
+}}
+
+.sector.collapsed::after {{
+  transform:translateY(-50%) rotate(-90deg);
+}}
+
+.sector-group {{
+  margin:0 8px 6px;
+  overflow:hidden;
+  max-height:2000px;
+  opacity:1;
+  transition:max-height .35s cubic-bezier(.4,0,.2,1),opacity .25s ease;
+}}
+
+.sector.collapsed + .sector-group {{
+  max-height:0;
+  opacity:0;
+  pointer-events:none;
+}}
+
+/* ===== STOCK ROW ===== */
+.stock {{
+  padding:7px 14px;
+  margin:2px 6px;
+  border-radius:8px;
+  font-size:12px;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  transition:all .15s ease;
+}}
+
+.stock:hover {{
+  background:#1e293b;
+}}
+
+.stock.active {{
+  background:linear-gradient(90deg,#2563eb,#1d4ed8);
+}}
+
+/* ===== STOCK LEFT ===== */
+.stock-left {{
+  display:flex;
+  align-items:center;
+  gap:6px;
+}}
+
+.stock-name {{
+  font-size:13px;
+  font-weight:600;
+  letter-spacing:.2px;
+  cursor:pointer;
+}}
+
+/* ===== ICONS ===== */
+.star {{
+  cursor:pointer;
+  color:#64748b;
+  font-size:18px;
+}}
+.star.active {{
+  color:#facc15;
+}}
+
+.open-new {{
+  cursor:pointer;
+  color:#38bdf8;
+  font-size:20px;
+  font-weight:900;
+  line-height:1;
+}}
+.open-new:hover {{
+  color:#7dd3fc;
+}}
+</style>
+
+</head>
+
+<body>
+
+<div id="chart">
+  <button id="open-tv" onclick="openFullTV()">Open Full TradingView ↗</button>
+  <div id="tv"></div>
+</div>
+
+<div id="resizer"></div>
+
+<div id="sidebar">
+  <div class="header">WATCHLIST</div>
+
+  <div class="fav-header" onclick="toggleFavBox(this)">★ FAVORITES</div>
+  <div id="fav-list"></div>
+
+  {sidebar}
+</div>
+
+<script>
+let widget;
+let stocks=[...document.querySelectorAll('.stock')];
+let favs=JSON.parse(localStorage.getItem("favs")||"[]");
+let currentSymbol=null;
+
+function loadChart(sym){{
+  if(widget) widget.remove();
+  widget=new TradingView.widget({{
+    autosize:true,
+    symbol:sym,
+    interval:"1D",
+    theme:"dark",
+    container_id:"tv"
+  }});
+}}
+
+function selectStock(el){{
+  stocks.forEach(s=>s.classList.remove('active'));
+  el.classList.add('active');
+  currentSymbol=el.dataset.symbol;
+  loadChart(currentSymbol);
+}}
+
+function openFullTV(){{
+  if(!currentSymbol) return;
+  window.open("https://www.tradingview.com/chart/?symbol="+currentSymbol,"_blank");
+}}
+
+function openStockNewTab(e,sym){{
+  e.stopPropagation();
+  window.open("https://www.tradingview.com/chart/?symbol="+sym,"_blank");
+}}
+
+function toggleSector(el){{ el.classList.toggle("collapsed"); }}
+function toggleFavBox(el){{ el.classList.toggle("collapsed"); }}
+
+function toggleFav(e,sym){{
+  e.stopPropagation();
+  favs=favs.includes(sym)?favs.filter(x=>x!==sym):[...favs,sym];
+  localStorage.setItem("favs",JSON.stringify(favs));
+  renderFavs();
+}}
+
+function renderFavs(){{
+  const box=document.getElementById("fav-list");
+  box.innerHTML="";
+  favs.forEach(sym=>{{
+    const d=document.createElement("div");
+    d.className="fav-stock";
+
+    const n=document.createElement("span");
+    n.innerText=sym;
+    n.onclick=()=>{{ currentSymbol=sym; loadChart(sym); }};
+
+    const r=document.createElement("span");
+    r.innerText="✕";
+    r.className="fav-remove";
+    r.onclick=e=>{{ e.stopPropagation(); favs=favs.filter(x=>x!==sym); localStorage.setItem("favs",JSON.stringify(favs)); renderFavs(); }};
+
+    d.appendChild(n); d.appendChild(r); box.appendChild(d);
+  }});
+
+  document.querySelectorAll(".star").forEach(star=>{{
+    star.classList.toggle("active",favs.includes(star.parentElement.parentElement.dataset.symbol));
+  }});
+}}
+
+renderFavs();
+if(stocks.length>0) selectStock(stocks[0]);
+
+let resizing=false;
+resizer.onmousedown=()=>resizing=true;
+document.onmouseup=()=>resizing=false;
+document.onmousemove=e=>{{ if(resizing) sidebar.style.width=(window.innerWidth-e.clientX)+"px"; }};
+</script>
+
+</body>
+</html>
+"""
+
