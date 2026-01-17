@@ -436,12 +436,20 @@ function selectStock(el){{
 
 function openFullTV(){{
   if(!currentSymbol) return;
-  window.open("https://www.tradingview.com/chart/?symbol="+currentSymbol,"_blank");
+  window.open(
+  "https://www.tradingview.com/chart/?symbol=" + currentSymbol + "&interval=1D",
+  "_blank"
+);
+
 }}
 
 function openStockNewTab(e,sym){{
   e.stopPropagation();
-  window.open("https://www.tradingview.com/chart/?symbol="+sym,"_blank");
+  window.open(
+  "https://www.tradingview.com/chart/?symbol=" + currentSymbol + "&interval=1D",
+  "_blank"
+);
+
 }}
 
 function toggleSector(el){{ el.classList.toggle("collapsed"); }}
