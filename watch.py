@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
+import threading, webbrowser, time, uvicorn
 
 # ================= SECTORS =================
 SECTOR_DEFINITIONS = {
@@ -55,7 +56,7 @@ SECTOR_DEFINITIONS = {
         "ANGELONE", "RECLTD", "BAJFINANCE", "BSE", "MAXHEALTH",
         "ICICIGI", "HUDCO", "CHOLAFIN", "PFC", "HDFCAMC", "MUTHOOTFIN",
         "PAYTM", "JIOFIN", "SHRIRAMFIN", "SBICARD", "POLICYBZR",
-        "SBILIFE", "LICHSGFIN", "LICI", "MANAPPURAM", "IRFC", "IIFL", "CDSL"
+        "SBILIFE", "LICHSGFIN", "LICI", "MANAPPURAM", 'IRFC', "IIFL", "CDSL"
     ],
     "BANK": [
         "IDFCFIRSTB", "FEDERALBNK", "INDUSINDBK",
@@ -75,7 +76,7 @@ SECTOR_DEFINITIONS = {
         "TECHM","TITAN","TRENT","ULTRACEMCO","WIPRO",
         "TATAMOTORS","ETERNAL"
     ],
-    "MIDCAP": [
+     "MIDCAP": [
         "RVNL", "MPHASIS", "HINDPETRO", "PAGEIND", "POLYCAB",
         "LUPIN", "IDFCFIRSTB", "CONCOR", "CUMMINSIND", "VOLTAS",
         "BHARATFORG", "FEDERALBNK", "INDHOTEL", "COFORGE",
@@ -83,21 +84,26 @@ SECTOR_DEFINITIONS = {
         "AUROPHARMA", "AUBANK", "ASTRAL", "HDFCAMC",
         "JUBLFOOD", "PIIND"
     ],
-    "INDICES": [
-        "CNXENERGY","CNXCONSUMPTION","CNXREALTY","NIFTY_OIL_AND_GAS",
-        "CNXPHARMA","CNXIT","NIFTY_HEALTHCARE","CNXFMCG",
-        "CNXFINANCE","NIFTY_CONSR_DURBL","CNXAUTO","CNXMETAL"
+     "INDICES": [
+        "CNXENERGY",
+        "CNXCONSUMPTION",
+        "CNXREALTY",
+        "NIFTY_OIL_AND_GAS",
+        "CNXPHARMA",
+        "CNXIT",
+        "NIFTY_HEALTHCARE",
+        "CNXFMCG",
+        "CNXFINANCE",
+        "NIFTY_CONSR_DURBL",
+        "CNXAUTO",
+        "CNXMETAL"
     ]
+   
 }
 
 # ================= FASTAPI =================
 app = FastAPI(title="TradingView Watchlist")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 @app.get("/", response_class=HTMLResponse)
 def index():
@@ -110,12 +116,14 @@ def index():
         for s in stocks:
             sidebar += f"""
             <div class="stock" data-symbol="{s}">
-              <div class="stock-left">
-                <span class="stock-name" onclick="selectStock(this.closest('.stock'))">{s}</span>
-                <span class="open-new" onclick="openStockNewTab(event,'{s}')">↗</span>
-              </div>
-              <span class="star" onclick="toggleFav(event,'{s}')">☆</span>
-            </div>
+  <div class="stock-left">
+    <span class="stock-name" onclick="selectStock(this.closest('.stock'))">{s}</span>
+    <span class="open-new" onclick="openStockNewTab(event,'{s}')">↗</span>
+  </div>
+  <span class="star" onclick="toggleFav(this,event,'{s}')">☆</span>
+
+</div>
+
             """
         sidebar += "</div>"
 
@@ -372,7 +380,8 @@ body {{
 .star {{
   cursor:pointer;
   color:#64748b;
-  font-size:18px;
+  font-size:20px;
+  font-weight: 1200;
 }}
 .star.active {{
   color:#facc15;
@@ -430,61 +439,120 @@ function loadChart(sym){{
 function selectStock(el){{
   stocks.forEach(s=>s.classList.remove('active'));
   el.classList.add('active');
-  currentSymbol=el.dataset.symbol;
+
+  currentSymbol = el.dataset.symbol;
   loadChart(currentSymbol);
 }}
 
+
 function openFullTV(){{
   if(!currentSymbol) return;
-  window.open(
+window.open(
   "https://www.tradingview.com/chart/?symbol=" + currentSymbol + "&interval=1D",
   "_blank"
 );
 
 }}
-
-function openStockNewTab(e,sym){{
+function openStockNewTab(e, sym){{
   e.stopPropagation();
-  window.open(
-  "https://www.tradingview.com/chart/?symbol=" + currentSymbol + "&interval=1D",
-  "_blank"
-);
 
+  window.open(
+    "https://www.tradingview.com/chart/?symbol=" + sym + "&interval=1D",
+    "_blank"
+  );
 }}
+
 
 function toggleSector(el){{ el.classList.toggle("collapsed"); }}
 function toggleFavBox(el){{ el.classList.toggle("collapsed"); }}
 
-function toggleFav(e,sym){{
+function toggleFav(starEl, e, sym){{
   e.stopPropagation();
-  favs=favs.includes(sym)?favs.filter(x=>x!==sym):[...favs,sym];
-  localStorage.setItem("favs",JSON.stringify(favs));
+
+  if(favs.includes(sym)){{
+    favs = favs.filter(x => x !== sym);
+    starEl.classList.remove("active");
+  }} else {{
+    favs = [...favs, sym];
+    starEl.classList.add("active");
+  }}
+
+  localStorage.setItem("favs", JSON.stringify(favs));
+
   renderFavs();
 }}
 
-function renderFavs(){{
-  const box=document.getElementById("fav-list");
-  box.innerHTML="";
-  favs.forEach(sym=>{{
-    const d=document.createElement("div");
-    d.className="fav-stock";
 
-    const n=document.createElement("span");
-    n.innerText=sym;
-    n.onclick=()=>{{ currentSymbol=sym; loadChart(sym); }};
 
-    const r=document.createElement("span");
-    r.innerText="✕";
-    r.className="fav-remove";
-    r.onclick=e=>{{ e.stopPropagation(); favs=favs.filter(x=>x!==sym); localStorage.setItem("favs",JSON.stringify(favs)); renderFavs(); }};
+function renderFavs() {{
+  const box = document.getElementById("fav-list");
+  box.innerHTML = "";
 
-    d.appendChild(n); d.appendChild(r); box.appendChild(d);
+  favs.forEach(sym => {{
+    const d = document.createElement("div");
+    d.className = "fav-stock";
+
+    const left = document.createElement("div");
+    left.style.display = "flex";
+    left.style.alignItems = "center";
+    left.style.gap = "6px";
+
+    const n = document.createElement("span");
+    n.innerText = sym;
+    n.style.cursor = "pointer";
+    n.onclick = () => {{
+      const stockEl = document.querySelector('.stock[data-symbol="' + sym + '"]');
+      if (stockEl) {{
+        selectStock(stockEl);
+      }} else {{
+        currentSymbol = "NSE:" + sym;
+        loadChart(currentSymbol);
+      }}
+    }};
+
+    const o = document.createElement("span");
+    o.innerText = "↗";
+    o.className = "open-new";
+    o.onclick = e => {{
+      e.stopPropagation();
+      window.open(
+        "https://www.tradingview.com/chart/?symbol=" + sym + "&interval=1D",
+        "_blank"
+      );
+    }};
+
+    left.appendChild(n);
+    left.appendChild(o);
+
+    const r = document.createElement("span");
+    r.innerText = "✕";
+    r.className = "fav-remove";
+    r.onclick = e => {{
+      e.stopPropagation();
+      favs = favs.filter(x => x !== sym);
+      localStorage.setItem("favs", JSON.stringify(favs));
+      renderFavs();
+    }};
+
+    d.appendChild(left);
+    d.appendChild(r);
+    box.appendChild(d);
   }});
 
-  document.querySelectorAll(".star").forEach(star=>{{
-    star.classList.toggle("active",favs.includes(star.parentElement.parentElement.dataset.symbol));
+  // ✅ FIX: correct star ↔ stock mapping
+  document.querySelectorAll(".star").forEach(star => {{
+    const stockEl = star.closest(".stock");
+    if (!stockEl) return;
+
+    star.classList.toggle(
+      "active",
+      favs.includes(stockEl.dataset.symbol)
+    );
   }});
 }}
+
+
+
 
 renderFavs();
 if(stocks.length>0) selectStock(stocks[0]);
@@ -499,3 +567,10 @@ document.onmousemove=e=>{{ if(resizing) sidebar.style.width=(window.innerWidth-e
 </html>
 """
 
+def open_browser():
+    time.sleep(1.5)
+    webbrowser.open("http://127.0.0.1:9000")
+
+if __name__ == "__main__":
+    threading.Thread(target=open_browser, daemon=True).start()
+    uvicorn.run(app, host="127.0.0.1", port=9000, log_level="warning")
